@@ -8,7 +8,7 @@ import sys
 from PIL import Image
 import llava_ifc
 import matplotlib.pyplot as plt
-
+from concurrent.futures import ThreadPoolExecutor
 
 # Function to split the text into multiple lines that fit within the image width
 def wrap_text(text, font, font_scale, thickness, img_width):
@@ -33,7 +33,6 @@ def wrap_text(text, font, font_scale, thickness, img_width):
         lines.append(current_line.strip())
     
     return lines
-
 
 # Function to list available cameras using FFmpeg
 def list_available_cameras():
@@ -63,7 +62,6 @@ def list_available_cameras():
 
     return video_devices
 
-
 # Function to add transparent rectangle with multiline text at the bottom of the frame
 def add_caption_to_frame(frame, text="Placeholder caption", font=cv2.FONT_HERSHEY_SIMPLEX, font_scale=0.7, thickness=1):
     img_height, img_width, _ = frame.shape
@@ -73,7 +71,7 @@ def add_caption_to_frame(frame, text="Placeholder caption", font=cv2.FONT_HERSHE
     line_spacing = 5
     total_text_height = len(lines) * (text_height + line_spacing)
 
-    rect_x1, rect_y1 = 0, img_height - total_text_height - 30
+    rect_x1, rect_y1 = 0, img_height - total_text_height - 50
     rect_x2, rect_y2 = img_width, img_height
 
     overlay = frame.copy()
@@ -91,22 +89,23 @@ def add_caption_to_frame(frame, text="Placeholder caption", font=cv2.FONT_HERSHE
     
     return frame
 
-
 # Function to generate a caption using LLava
 def generate_caption(processor, model, frame):
     # Convert OpenCV frame to PIL Image for LLava
     pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    
+    # Resize the image to a smaller resolution, for example, 224x224
+    #resized_image = pil_image.resize((224, 224))  # Adjust the size as needed
 
     # Parameters for caption generation
-    prompt_template = "USER: <image>\nDescribe this image in two sentences.\nASSISTANT:"
-    max_tokens = 256
-    temp = 0.2
+    prompt_template = "USER: <image>\nDescribe this image in a single short sentence.\nASSISTANT:"
+    max_tokens = 32
+    temp = 0.5
 
     # Generate caption
     result = llava_ifc.generate_caption(processor, model, pil_image, prompt_template, max_tokens, temp)
 
     return result
-
 
 # Function to continuously capture and display images with optional LLava caption
 def capture_and_display_continuous(camera_index, frame_rate, processor, model):
@@ -117,6 +116,16 @@ def capture_and_display_continuous(camera_index, frame_rate, processor, model):
         return
 
     captioning_enabled = False  # Initialize captioning as off
+    latest_caption = "No caption available"  # Default caption when LLava is not running
+    latest_frame = None  # Store the latest frame for captioning
+
+    executor = ThreadPoolExecutor(max_workers=1)  # Initialize a thread pool with one worker
+    caption_future = None  # To store the future object for captioning
+
+    def update_caption_in_background(frame):
+        nonlocal latest_caption
+        caption = generate_caption(processor, model, frame)
+        latest_caption = caption
 
     try:
         while True:
@@ -125,11 +134,17 @@ def capture_and_display_continuous(camera_index, frame_rate, processor, model):
                 print("Error: Could not read the frame.")
                 continue
 
+            # Update the latest frame
+            latest_frame = frame
+
+            # Check if captioning is enabled
             if captioning_enabled:
-                # Generate a caption for the current frame using LLava
-                caption = generate_caption(processor, model, frame)
-                # Add the caption and the transparent background to the frame
-                frame_with_caption = add_caption_to_frame(frame, text=caption)
+                # Submit a new caption task if no task is running or the previous one is done
+                if caption_future is None or caption_future.done():
+                    caption_future = executor.submit(update_caption_in_background, latest_frame)
+
+                # Add the latest caption (generated from a previous frame) to the current frame
+                frame_with_caption = add_caption_to_frame(frame, text=latest_caption)
             else:
                 frame_with_caption = frame
 
@@ -151,8 +166,7 @@ def capture_and_display_continuous(camera_index, frame_rate, processor, model):
     finally:
         cap.release()
         cv2.destroyAllWindows()
-
-
+        executor.shutdown()
 
 # Command-line interface to select the camera by index and frame rate
 def main():
@@ -175,10 +189,10 @@ def main():
 
     # Load LLava model and processor once, before the loop
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.getcwd()), '../mlx-examples/llava')))
-    # model_name = "llava-hf/llava-1.5-13b-hf"
-    # model_name = "llava-hf/llama3-llava-next-8b-hf"
-    # model_name = "llava-hf/llava-v1.6-mistral-7b-hf"
     model_name = "llava-hf/llava-1.5-7b-hf"
+    #model_name = "llava-hf/llava-1.5-13b-hf"
+    #model_name = "llava-hf/llava-onevision-qwen2-0.5b-si-hf"
+
     processor, model = llava_ifc.load_model(model_name, {})
 
     # Start capturing from the selected camera at the specified frame rate
