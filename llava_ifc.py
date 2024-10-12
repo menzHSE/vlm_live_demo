@@ -1,11 +1,14 @@
 import codecs
 from pathlib import Path
-
+import sys
+import os
 import mlx
 import mlx.core as mx
 import requests
 from PIL import Image
 from transformers import AutoProcessor
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.getcwd()), 'mlx/mlx-examples/llava')))
 
 from llava import LlavaModel # type: ignore
 
