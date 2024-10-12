@@ -6,9 +6,57 @@ import time  # Import time to add delay
 import os
 import sys
 from PIL import Image
-import llava_ifc
 import matplotlib.pyplot as plt
 from concurrent.futures import ThreadPoolExecutor
+import threading
+import queue  # Import queue for managing caption tasks
+import llava_ifc  # Import llava_ifc only after threading has been initialized
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+# Global queue to hold captions and a variable to control audio output
+caption_queue = queue.Queue(maxsize=1)  # Limit the queue to 1 element to always keep the newest caption
+audio_enabled = False  # Track whether audio output is enabled
+
+
+# Function to display available key commands
+def display_help():
+    print("\nAvailable Key Commands:")
+    print("'q' : Quit the application.")
+    print("'c' : Toggle captioning on/off.")
+    print("'a' : Toggle audio on/off.")
+    print("'h' : Display this help message.\n")
+
+# Function to run macOS 'say' command in a separate thread and speak captions sequentially
+def speak_caption_worker():
+    while True:
+        # Get the next caption from the queue
+        caption = caption_queue.get()
+        if caption is None:
+            break  # Exit the worker thread
+        
+        # Speak the caption using 'say' command only if audio is enabled
+        if audio_enabled:
+            subprocess.run(['say', caption])
+        
+        # Mark the task as done
+        caption_queue.task_done()
+
+# Function to add a new caption to the queue (replace the old one if the queue is full)
+def add_caption_to_queue(caption):
+    if not caption_queue.empty():
+        try:
+            caption_queue.get_nowait()  # Remove the oldest caption
+        except queue.Empty:
+            pass  # In case there is no caption, do nothing
+    caption_queue.put(caption)
+
+# Function to initialize TTS and start threading
+def init_tts_engine():
+    # Start the caption worker thread
+    worker_thread = threading.Thread(target=speak_caption_worker, daemon=True)
+    worker_thread.start()
+    return None  # No need for further initialization
 
 # Function to split the text into multiple lines that fit within the image width
 def wrap_text(text, font, font_scale, thickness, img_width):
@@ -94,11 +142,8 @@ def generate_caption(processor, model, frame):
     # Convert OpenCV frame to PIL Image for LLava
     pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     
-    # Resize the image to a smaller resolution, for example, 224x224
-    #resized_image = pil_image.resize((224, 224))  # Adjust the size as needed
-
     # Parameters for caption generation
-    prompt_template = "USER: <image>\nDescribe this image in a single short sentence.\nASSISTANT:"
+    prompt_template = "USER: <image>\nDescribe this image in a single sentence.\nASSISTANT:"
     max_tokens = 32
     temp = 0.5
 
@@ -107,8 +152,9 @@ def generate_caption(processor, model, frame):
 
     return result
 
-# Function to continuously capture and display images with optional LLava caption
-def capture_and_display_continuous(camera_index, frame_rate, processor, model):
+# Function to continuously capture and display images with optional LLava caption and TTS
+def capture_and_display_continuous(camera_index, frame_rate, processor, model, tts_engine):
+    global audio_enabled
     cap = cv2.VideoCapture(camera_index)
 
     if not cap.isOpened():
@@ -126,6 +172,8 @@ def capture_and_display_continuous(camera_index, frame_rate, processor, model):
         nonlocal latest_caption
         caption = generate_caption(processor, model, frame)
         latest_caption = caption
+        # Add the caption to the queue to be spoken sequentially
+        add_caption_to_queue(caption)
 
     try:
         while True:
@@ -160,6 +208,13 @@ def capture_and_display_continuous(camera_index, frame_rate, processor, model):
                 # Toggle captioning on/off
                 captioning_enabled = not captioning_enabled
                 print(f"Captioning {'enabled' if captioning_enabled else 'disabled'}.")
+            elif key == ord('a'):
+                # Toggle audio output on/off
+                audio_enabled = not audio_enabled
+                print(f"Audio {'enabled' if audio_enabled else 'disabled'}.")
+            elif key == ord('h'):
+                # Display help message
+                display_help()
 
             # Sleep to match the frame rate
             # time.sleep(1 / frame_rate)
@@ -187,20 +242,23 @@ def main():
         print(f"Error: No camera found with index {camera_index}")
         return
 
-    # Load LLava model and processor once, before the loop
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.getcwd()), '../mlx-examples/llava')))
-    model_name = "llava-hf/llava-1.5-7b-hf"
-    #model_name = "llava-hf/llava-1.5-13b-hf"
-    #model_name = "llava-hf/llava-onevision-qwen2-0.5b-si-hf"
+    # Initialize TTS engine (macOS 'say' does not need initialization)
+    tts_engine = init_tts_engine()
 
+    # Load LLava model and processor once, after threading is initialized
+    sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), '../mlx-examples/llava')))
+    model_name = "llava-hf/llava-1.5-7b-hf"
     processor, model = llava_ifc.load_model(model_name, {})
 
     # Start capturing from the selected camera at the specified frame rate
-    capture_and_display_continuous(camera_index, frame_rate, processor, model)
+    capture_and_display_continuous(camera_index, frame_rate, processor, model, tts_engine)
 
     # Clean up the model after use
     del processor
     del model
+
+    # Stop the worker thread
+    add_caption_to_queue(None)  # Signal the worker to stop
 
 
 if __name__ == "__main__":
