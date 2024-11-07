@@ -149,7 +149,7 @@ def generate_caption(model, frame):
     return result
 
 # Function to continuously capture and display images with optional LLava caption and TTS
-def capture_and_display_continuous(camera_index, frame_rate, model, tts_engine):
+def capture_and_display_continuous(camera_index, model, tts_engine, caption_interval):
     global audio_enabled
     cap = cv2.VideoCapture(camera_index)
 
@@ -157,19 +157,19 @@ def capture_and_display_continuous(camera_index, frame_rate, model, tts_engine):
         print(f"Error: Could not open the camera at index {camera_index}.")
         return
 
-    captioning_enabled = False  # Initialize captioning as off
-    latest_caption = "No caption available"  # Default caption when LLava is not running
-    latest_frame = None  # Store the latest frame for captioning
-
-    executor = ThreadPoolExecutor(max_workers=1)  # Initialize a thread pool with one worker
-    caption_future = None  # To store the future object for captioning
+    captioning_enabled = False  
+    latest_caption = "No caption available"  
+    latest_frame = None  
+    executor = ThreadPoolExecutor(max_workers=1)
+    caption_future = None  
 
     def update_caption_in_background(model, frame):
         nonlocal latest_caption
         caption = generate_caption(model, frame)
         latest_caption = caption
-        # Add the caption to the queue to be spoken sequentially
         add_caption_to_queue(caption)
+
+    last_caption_time = time.time()  # Track the last time a caption was updated
 
     try:
         while True:
@@ -178,42 +178,34 @@ def capture_and_display_continuous(camera_index, frame_rate, model, tts_engine):
                 print("Error: Could not read the frame.")
                 continue
 
-            # Update the latest frame
             latest_frame = frame
 
-            # Check if captioning is enabled
-            if captioning_enabled:
-                # Submit a new caption task if no task is running or the previous one is done
+            # Update caption based on specified interval           
+            current_time = time.time()
+            if captioning_enabled and (current_time - last_caption_time >= caption_interval):
                 if caption_future is None or caption_future.done():
                     caption_future = executor.submit(update_caption_in_background, model, latest_frame)
+                    print(f"Caption done in {(current_time - last_caption_time):4.2} seconds.")
+                    last_caption_time = current_time
+                    
 
-                # Add the latest caption (generated from a previous frame) to the current frame
-                frame_with_caption = add_caption_to_frame(frame, text=latest_caption)
-            else:
-                frame_with_caption = frame
-
-            # Display the frame (with or without caption) using OpenCV
+            
+            frame_with_caption = add_caption_to_frame(frame, text=latest_caption) if captioning_enabled else frame
             cv2.imshow('Webcam Feed with Caption', frame_with_caption)
 
-            # Check for keypresses
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 print("Exiting the loop.")
                 break
             elif key == ord('c'):
-                # Toggle captioning on/off
                 captioning_enabled = not captioning_enabled
-                print(f"Captioning {'enabled' if captioning_enabled else 'disabled'}.")
+                print(f"Captioning {'enabled (interval: ' + str(caption_interval) + ' sec)' if captioning_enabled else 'disabled'}.")
             elif key == ord('a'):
-                # Toggle audio output on/off
                 audio_enabled = not audio_enabled
                 print(f"Audio {'enabled' if audio_enabled else 'disabled'}.")
             elif key == ord('h'):
-                # Display help message
                 display_help()
 
-            # Sleep to match the frame rate
-            # time.sleep(1 / frame_rate)
     finally:
         cap.release()
         cv2.destroyAllWindows()
@@ -221,14 +213,18 @@ def capture_and_display_continuous(camera_index, frame_rate, model, tts_engine):
 
 # Command-line interface to select the camera by index and frame rate
 def main():
-    parser = argparse.ArgumentParser(description="Camera Selector for Webcam Stream with LLava-generated captions")
+    parser = argparse.ArgumentParser(description="Live Demo of Image Captioning with VLMs")
     parser.add_argument("-i", "--index", type=int, required=True, help="Index of the camera to use")
-    parser.add_argument("-f", "--framerate", type=float, required=False, default=30.0, help="Frame rate to capture (Hz)")
+    parser.add_argument("-m", "--model", type=str, required=False, default="llava", help="Name of the model to use")
+    parser.add_argument("-c", "--caption_interval", type=int, required=False, default=0, help="Interval in seconds between caption updates")
+    parser.add_argument("--mlx", action="store_true", required=False, default=False, help="Use the mlx version of LLava")
 
     args = parser.parse_args()
     camera_index = args.index
-    frame_rate = args.framerate
-
+    model_name = args.model
+    caption_interval = args.caption_interval
+   
+    
     devices = list_available_cameras()
     print("Available cameras:")
     for index, name in devices.items():
@@ -241,15 +237,19 @@ def main():
     # Initialize TTS engine (macOS 'say' does not need initialization)
     tts_engine = init_tts_engine()
 
-    # Load LLava model and processor once, after threading is initialized
-    #sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), '../mlx-examples/llava')))
-    #model_name = "llava-hf/llava-1.5-7b-hf"
-    #model = llava_ifc.LLavaMLX(model_name, {})
-
-    model = ollama_ifc.OllamaVLM()
+    if args.mlx:
+        # Load LLava model and processor once, after threading is initialized
+        sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), '../mlx-examples/llava')))
+        model_name = "llava-hf/llava-1.5-7b-hf"
+        model = llava_ifc.LLavaMLX(model_name, {})
+    else:
+        # Ollama interface
+        model = ollama_ifc.OllamaVLM(model_name)
+        
+    print(f"Using model: {model_name}")
 
     # Start capturing from the selected camera at the specified frame rate
-    capture_and_display_continuous(camera_index, frame_rate, model, tts_engine)
+    capture_and_display_continuous(camera_index, model, tts_engine, caption_interval)
 
     # Clean up the model after use
     del model
