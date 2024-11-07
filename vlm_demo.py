@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import queue  # Import queue for managing caption tasks
 import llava_ifc  # Import llava_ifc only after threading has been initialized
+import ollama_ifc
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -138,22 +139,17 @@ def add_caption_to_frame(frame, text="Placeholder caption", font=cv2.FONT_HERSHE
     return frame
 
 # Function to generate a caption using LLava
-def generate_caption(processor, model, frame):
-    # Convert OpenCV frame to PIL Image for LLava
+def generate_caption(model, frame):
+    
+    # Convert OpenCV frame to PIL Image for the VLM
     pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     
-    # Parameters for caption generation
-    prompt_template = "USER: <image>\nDescribe this image in a single sentence.\nASSISTANT:"
-    max_tokens = 32
-    temp = 0.5
-
     # Generate caption
-    result = llava_ifc.generate_caption(processor, model, pil_image, prompt_template, max_tokens, temp)
-
+    result = model.generate_caption(pil_image)
     return result
 
 # Function to continuously capture and display images with optional LLava caption and TTS
-def capture_and_display_continuous(camera_index, frame_rate, processor, model, tts_engine):
+def capture_and_display_continuous(camera_index, frame_rate, model, tts_engine):
     global audio_enabled
     cap = cv2.VideoCapture(camera_index)
 
@@ -168,9 +164,9 @@ def capture_and_display_continuous(camera_index, frame_rate, processor, model, t
     executor = ThreadPoolExecutor(max_workers=1)  # Initialize a thread pool with one worker
     caption_future = None  # To store the future object for captioning
 
-    def update_caption_in_background(frame):
+    def update_caption_in_background(model, frame):
         nonlocal latest_caption
-        caption = generate_caption(processor, model, frame)
+        caption = generate_caption(model, frame)
         latest_caption = caption
         # Add the caption to the queue to be spoken sequentially
         add_caption_to_queue(caption)
@@ -189,7 +185,7 @@ def capture_and_display_continuous(camera_index, frame_rate, processor, model, t
             if captioning_enabled:
                 # Submit a new caption task if no task is running or the previous one is done
                 if caption_future is None or caption_future.done():
-                    caption_future = executor.submit(update_caption_in_background, latest_frame)
+                    caption_future = executor.submit(update_caption_in_background, model, latest_frame)
 
                 # Add the latest caption (generated from a previous frame) to the current frame
                 frame_with_caption = add_caption_to_frame(frame, text=latest_caption)
@@ -246,15 +242,16 @@ def main():
     tts_engine = init_tts_engine()
 
     # Load LLava model and processor once, after threading is initialized
-    sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), '../mlx-examples/llava')))
-    model_name = "llava-hf/llava-1.5-7b-hf"
-    processor, model = llava_ifc.load_model(model_name, {})
+    #sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), '../mlx-examples/llava')))
+    #model_name = "llava-hf/llava-1.5-7b-hf"
+    #model = llava_ifc.LLavaMLX(model_name, {})
+
+    model = ollama_ifc.OllamaVLM()
 
     # Start capturing from the selected camera at the specified frame rate
-    capture_and_display_continuous(camera_index, frame_rate, processor, model, tts_engine)
+    capture_and_display_continuous(camera_index, frame_rate, model, tts_engine)
 
     # Clean up the model after use
-    del processor
     del model
 
     # Stop the worker thread
