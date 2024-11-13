@@ -10,8 +10,7 @@ class OllamaVLM(VLM):
         self.model_name = model_name
     
 
-    def generate_caption(self, image_source):
-         
+    def generate_caption(self, image_source, prompt="Describe this image in a short single sentence. Please do not exceed 15 words in total."):
         # Create a temporary file in a context manager
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=True) as tmp_file:
             # Save the image to the temporary file
@@ -25,7 +24,7 @@ class OllamaVLM(VLM):
                 model=self.model_name,
                 messages=[{
                     'role': 'user',
-                    'content': 'Describe this image in a short single sentence. Please do not exceed 15 words in total.',
+                    'content': prompt,
                     'images': [tmp_file.name]
                 }],
                 options={'temperature': 0.3}
