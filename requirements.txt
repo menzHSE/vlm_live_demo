@@ -1,0 +1,9 @@
+ollama
+opencv-python
+pillow
+matplotlib
+numpy
+mlx
+requests
+transformers
+torch
